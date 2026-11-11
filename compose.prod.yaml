@@ -1,0 +1,5 @@
+services:
+  app:
+    image: ghcr.io/stela-uznv/devops-labs-fn371223019:${APP_TAG:-latest}
+    ports:
+      - "8000:8000"
