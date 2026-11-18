@@ -1,0 +1,145 @@
+---
+- hosts: all
+  become: true
+
+  tasks:
+    - name: Install base packages
+      ansible.builtin.apt:
+        name:
+          - curl
+          - ca-certificates
+          - acl
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+- hosts: db
+  become: true
+
+  vars:
+    db_name: notes
+    db_user: notes
+    db_password: notespass
+
+  handlers:
+    - name: Restart PostgreSQL
+      ansible.builtin.command:
+        cmd: pg_ctlcluster 17 main restart
+
+  tasks:
+    - name: Install PostgreSQL
+      ansible.builtin.apt:
+        name:
+          - postgresql
+          - python3-psycopg2
+        state: present
+
+    - name: Start PostgreSQL cluster
+      ansible.builtin.command:
+        cmd: pg_ctlcluster 17 main start
+      ignore_errors: true
+
+    - name: Configure listen_addresses
+      ansible.builtin.lineinfile:
+        path: /etc/postgresql/17/main/postgresql.conf
+        regexp: "^#?listen_addresses"
+        line: "listen_addresses = '*'"
+      notify: Restart PostgreSQL
+
+    - name: Configure pg_hba
+      ansible.builtin.lineinfile:
+        path: /etc/postgresql/17/main/pg_hba.conf
+        line: "host all all 0.0.0.0/0 scram-sha-256"
+      notify: Restart PostgreSQL
+
+    - name: Flush handlers
+      meta: flush_handlers
+
+    - name: Ensure DB user exists
+      become_user: postgres
+      community.postgresql.postgresql_user:
+        user: "{{ db_user }}"
+        password: "{{ db_password }}"
+        state: present
+
+    - name: Ensure DB exists
+      become_user: postgres
+      community.postgresql.postgresql_db:
+        name: "{{ db_name }}"
+        owner: "{{ db_user }}"
+        state: present
+
+- hosts: web
+  become: true
+
+  vars:
+    database_url: postgresql://notes:notespass@db:5432/notes
+
+  handlers:
+    - name: Restart notes
+      ansible.builtin.systemd:
+        name: notes
+        state: restarted
+
+  tasks:
+    - name: Install web packages
+      ansible.builtin.apt:
+        name:
+          - python3-venv
+          - python3-packaging
+          - git
+        state: present
+        update_cache: true
+
+    - name: Clone repository
+      ansible.builtin.git:
+        repo: https://github.com/stela-uznv/devops-labs-fn371223019.git
+        dest: /opt/notes
+      notify: Restart notes
+
+    - name: Install Python requirements
+      ansible.builtin.pip:
+        requirements: /opt/notes/requirements.txt
+        virtualenv: /opt/notes/.venv
+        virtualenv_command: python3 -m venv
+
+    - name: Install notes service
+      ansible.builtin.template:
+        src: templates/notes.service.j2
+        dest: /etc/systemd/system/notes.service
+      notify: Restart notes
+
+    - name: Enable and start notes service
+      ansible.builtin.systemd:
+        name: notes
+        enabled: true
+        state: started
+        daemon_reload: true
+
+- hosts: lb
+  become: true
+
+  handlers:
+    - name: Reload nginx
+      ansible.builtin.service:
+        name: nginx
+        state: reloaded
+
+  tasks:
+    - name: Install nginx
+      ansible.builtin.apt:
+        name: nginx
+        state: present
+        update_cache: true
+
+    - name: Install nginx config
+      ansible.builtin.template:
+        src: templates/nginx.conf.j2
+        dest: /etc/nginx/sites-available/default
+      notify: Reload nginx
+
+    - name: Start nginx
+      ansible.builtin.service:
+        name: nginx
+        state: started
+        enabled: true
